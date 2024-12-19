@@ -191,6 +191,8 @@ pub struct RequestBody {
     pub piece: PieceSet,
     #[serde(default)]
     pub coordinates: Coordinates,
+    #[serde(default)]
+    pub game_summary: Option<String>,
 }
 
 #[serde_as]
@@ -258,6 +260,7 @@ impl RequestBody {
             theme: BoardTheme::default(),
             piece: PieceSet::default(),
             coordinates: Coordinates::default(),
+            game_summary: Some(String::from("White resigned - Black is victorious")),
         }
     }
 }

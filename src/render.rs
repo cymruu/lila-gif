@@ -68,6 +68,7 @@ pub struct Render {
     coordinates: Coordinates,
     frames: vec::IntoIter<RenderFrame>,
     kork: bool,
+    game_summary: Option<String>,
 }
 
 impl Render {
@@ -91,6 +92,7 @@ impl Render {
             }]
             .into_iter(),
             kork: false,
+            game_summary: None,
         }
     }
 
@@ -114,11 +116,12 @@ impl Render {
                     highlighted: highlight_uci(frame.last_move),
                     checked: frame.check.to_square(&frame.fen.0).into_iter().collect(),
                     board: frame.fen.0.board,
-                    delay: Some(frame.delay.unwrap_or(default_delay)),
+                    delay: Some(5),
                 })
                 .collect::<Vec<_>>()
                 .into_iter(),
             kork: true,
+            game_summary: params.game_summary,
         }
     }
 }
@@ -270,6 +273,59 @@ impl Iterator for Render {
 
                     self.state = RenderState::Frame(frame);
                 } else {
+                    if let Some(game_summary) = &self.game_summary {
+                        println!("render game summary: {}", game_summary);
+                        let mut ctrl = block::GraphicControl::default();
+                        ctrl.set_disposal_method(block::DisposalMethod::Keep);
+                        ctrl.set_transparent_color(Some(self.theme.transparent_color()));
+                        ctrl.set_delay_time_cs(500);
+                        blocks.encode(ctrl).expect("enc graphic control");
+
+                        let summary_box_height = 100;
+                        let summary_box_width = 400;
+                        let summary_box_left = (self.theme.width() - summary_box_width) / 2;
+                        let summary_box_top =
+                            (self.theme.height(self.bars.is_some()) - summary_box_height) / 2;
+                        let summary_font_scale = Scale { x: 32.0, y: 32.0 };
+                        let v_metrics = self.font.v_metrics(summary_font_scale);
+
+                        blocks
+                            .encode(
+                                block::ImageDesc::default()
+                                    .with_left(summary_box_left as u16)
+                                    .with_top(summary_box_top as u16)
+                                    .with_height(summary_box_height as u16)
+                                    .with_width(summary_box_width as u16),
+                            )
+                            .expect("enc image desc");
+
+                        let mut view = ArrayViewMut2::from_shape(
+                            (summary_box_height, summary_box_width),
+                            &mut self.buffer,
+                        )
+                        .expect("summary view box view");
+                        view.fill(self.theme.bar_color());
+
+                        let glyphs = self.font.layout(
+                            game_summary,
+                            summary_font_scale,
+                            rusttype::point(5.0, 40.0),
+                        );
+                        render_summary(
+                            &mut view,
+                            glyphs,
+                            self.theme,
+                            self.theme.text_color(),
+                            self.theme.bar_color(),
+                        );
+
+                        let mut image_data =
+                            block::ImageData::new(summary_box_width * summary_box_height);
+                        image_data.data_mut().extend_from_slice(
+                            &self.buffer[..(summary_box_width * summary_box_height)],
+                        );
+                        blocks.encode(image_data).expect("enc summary box");
+                    }
                     // Add a black frame at the end, to work around twitter
                     // cutting off the last frame.
                     if self.kork {
@@ -502,6 +558,31 @@ fn highlight_uci(uci: Option<Uci>) -> Bitboard {
 }
 
 fn render_coord(
+    square_buffer: &mut ArrayViewMut2<u8>,
+    glyphs: LayoutIter,
+    theme: &Theme,
+    text_color: u8,
+    background_color: u8,
+) {
+    for g in glyphs {
+        if let Some(bb) = g.pixel_bounding_box() {
+            // Poor man's anti-aliasing.
+            g.draw(|left, top, intensity| {
+                let left = left as i32 + bb.min.x;
+                let top = top as i32 + bb.min.y;
+                if 0 <= left && left < theme.width() as i32 && 0 <= top && intensity >= 0.01 {
+                    if intensity < 0.5 {
+                        square_buffer[(top as usize, left as usize)] = background_color;
+                    } else {
+                        square_buffer[(top as usize, left as usize)] = text_color;
+                    }
+                }
+            });
+        };
+    }
+}
+
+fn render_summary(
     square_buffer: &mut ArrayViewMut2<u8>,
     glyphs: LayoutIter,
     theme: &Theme,
